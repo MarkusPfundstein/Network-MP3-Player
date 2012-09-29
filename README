@@ -1,0 +1,4 @@
+Small application which can receive mp3 files per tcp/ip and play
+them out on the device.
+
+Work in progress
