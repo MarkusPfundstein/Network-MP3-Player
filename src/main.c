@@ -4,6 +4,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <signal.h>
+#include <sys/queue.h>
 #include <ao/ao.h>
 #include <mpg123.h>
 #include "connection.h"
@@ -11,8 +12,6 @@
 #define OUT_BUF_SIZE 32768
 
 typedef struct thread_args_s {
-    char *ip;
-    int port;
 } thread_args_t;
 
 static int g_go_on;
@@ -30,7 +29,6 @@ stream_loop(mpg123_handle *mh)
     int channels;
     int encoding;
     long rate;
-    int i;
 
     status = MPG123_OK;
 
@@ -42,16 +40,16 @@ stream_loop(mpg123_handle *mh)
     dev = ao_open_live(ao_default_driver_id(), &format, NULL);
     if (!dev) {
         fprintf(stderr, "ao_open_live failed()");
+        return 1;
     }
 
-    g_go_on = dev ? 1 : 0;
-    while(g_go_on) {
+    do {
         status = mpg123_read(mh, out_buffer, OUT_BUF_SIZE, &bytes_decoded);
         if (status != 0) {
             fprintf(stderr, "status [%d] - %s\n", status, mpg123_plain_strerror(status));
         }
         if (status == MPG123_ERR || status == MPG123_DONE) {
-            g_go_on = 0;
+            break;
         } else { 
             if (status == MPG123_NEW_FORMAT) {
                 status = mpg123_getformat(mh, &rate, &channels, &encoding);
@@ -65,14 +63,14 @@ stream_loop(mpg123_handle *mh)
                 dev = ao_open_live(ao_default_driver_id(), &format, NULL);
                 if (!dev) {
                     fprintf(stderr, "ao_open_live failed\n");
-                    g_go_on = 0;
+                    break;
                 }
             }
             if (dev) {
                 ao_play(dev, (char*)out_buffer, bytes_decoded);
             }
         }
-    }
+    } while (1);
 
     if (dev) {
         ao_close(dev);
@@ -84,23 +82,11 @@ static void*
 stream_thread_main(void *args)
 {
     mpg123_handle *mh;
-    thread_args_t *thread_args;
     int status;
     
     fprintf(stderr, "start streaming thread\n");
 
     mh = NULL;
-    thread_args = (thread_args_t*)args;
-
-    g_connection = connection_make(thread_args->ip, thread_args->port);
-    if (!g_connection) {
-        fprintf(stderr, "error allocating struct connection\n");
-        goto cleanup;
-    }
-    if (connection_connect(g_connection) < 0) {
-        perror("connection_connect");
-        goto cleanup;
-    }
 
     mpg123_init();
     mh = mpg123_new(NULL, NULL);
@@ -135,9 +121,7 @@ cleanup:
     }
     mpg123_exit();
 
-    if (g_connection) {
-        connection_free(g_connection);
-    }
+    
     return NULL;
 }
 
@@ -150,7 +134,34 @@ print_usage()
 int
 cmd_loop(int argc, char **argv)
 {
-    return 0;
+    ssize_t bytes_read;
+    char *buffer;
+    unsigned int buf_len;
+    int err;
+    pthread_t stream_thread;
+
+    buf_len = 512;
+    buffer = malloc(buf_len);
+    err = 0;
+    while(g_go_on) {
+        bytes_read = getline(&buffer, &buf_len - 1, stdin);
+        if (bytes_read > 0) {
+            fprintf(stderr, "you typed: %s\n", buffer);
+            if (g_connection->is_connected) {
+                connection_write(g_connection, buffer, bytes_read);
+                fprintf(stderr, "create thread\n");
+                err = pthread_create(&stream_thread, NULL, stream_thread_main, NULL);
+                if (err != 0) {
+                    perror("thread create");
+                } else {
+                    fprintf(stderr, "wait for thread\n");
+                    pthread_join(stream_thread, NULL);
+                }
+            }
+        }
+    }
+    fprintf(stderr, "quit cmd loop\n");
+    return err;
 }
 
 static void
@@ -164,9 +175,9 @@ signal_handler(int sig)
 int 
 main(int argc, char **argv)
 {
-    thread_args_t *thread_args;
-    pthread_t stream_thread;
     int err;
+
+    g_go_on = 1;
 
     if (argc < 3) {
         print_usage();
@@ -175,27 +186,23 @@ main(int argc, char **argv)
 
     signal(SIGINT, signal_handler);
 
-    thread_args = malloc(sizeof(thread_args_t));
-    if (!thread_args) {
+    g_connection = connection_make(argv[1], atoi(argv[2]));
+    if (!g_connection) {
+        fprintf(stderr, "error allocating struct connection\n");
+        return 1;
+    }
+    if (connection_connect(g_connection) < 0) {
+        perror("connection_connect");
         return 1;
     }
 
-    thread_args->ip = argv[1];
-    thread_args->port = atoi(argv[2]);
-
-    fprintf(stderr, "ip: %s\n", thread_args->ip);
-    fprintf(stderr, "port: %d\n", thread_args->port);
-
-    err = pthread_create(&stream_thread, NULL, stream_thread_main, thread_args);
-    if (err != 0) {
-        perror("thread create");
-    } else {
+    
         err = cmd_loop(argc, argv);
         /* wait for stream_thread */
-        pthread_join(stream_thread, NULL);
-    }
 
-    free(thread_args);
+    if (g_connection) {
+        connection_free(g_connection);
+    }
 
     fprintf(stderr, "program exit with status: %d\n", err);
     return err;
