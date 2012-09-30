@@ -26,11 +26,17 @@ typedef struct thread_args_s {
     int stream_socket;
 } thread_args_t;
 
+typedef int (*cmd_callback_t)(char *, int);
+
+typedef struct cmd_table_s {
+    char *cmd;
+    cmd_callback_t cb;
+} cmd_table_t;
+
 static int g_go_on;
-
 static int g_cmd_sock;
-
 static int g_busy;
+static int g_stop;
 
 static fd_set g_read_master;
 
@@ -42,6 +48,37 @@ close_cmd_sock()
         close(g_cmd_sock);
         FD_CLR(g_cmd_sock, &g_read_master);
         g_cmd_sock = -1;
+    }
+}
+
+static int
+handle_stop_command(char *buffer, int buf_len)
+{
+    /* shut up compiler */
+    (void)buffer;
+    (void)buf_len;
+    
+    fprintf(stderr, "stop playing\n");
+
+    /* guess i wont need to lock this */
+    g_stop = 1;
+
+    return 0;
+}
+
+static void
+handle_command(char *buffer, int buf_len)
+{
+    int i;
+    int len;
+    static const cmd_table_t cmds[] = {
+        { "STOP", &handle_stop_command }
+    };
+    for (i = 0; i < sizeof(cmds) / sizeof(cmd_table_t); ++i) {
+        len = sizeof(cmds[i].cmd);
+        if (buf_len >= len && strncmp(buffer, cmds[i].cmd, len) == 0) {
+            cmds[i].cb(buffer + len, buf_len - len);
+        }
     }
 }
 
@@ -116,7 +153,7 @@ stream_loop(mpg123_handle *mh, int socket)
                 ao_play(dev, (char*)out_buffer, bytes_decoded);
             }
         }
-    } while (g_go_on);
+    } while (g_go_on && !g_stop);
 
     if (dev) {
         fprintf(stderr, "stderr close ao device\n");
@@ -133,6 +170,7 @@ stream_thread_main(void *args)
     
     fprintf(stderr, "start streaming thread\n");
     g_busy = 1;
+    g_stop = 0;
 
     thread_args = (thread_args_t*)args;
     /* go into loop which reads from connection and parses it to dev */
@@ -213,6 +251,7 @@ main(int argc, char **argv)
     g_go_on = 1;
     g_cmd_sock = -1;
     g_busy = 0;
+    g_stop = 0;
     FD_ZERO(&g_read_master);
     FD_SET(sockfd, &g_read_master);
     while (g_go_on) {
@@ -276,7 +315,7 @@ main(int argc, char **argv)
                         perror("cmd_sock read");
                     }
                 } else {
-                    fprintf(stderr, "{%s}\n", buffer);
+                    handle_command(buffer, bytes_read);
                 }
             }
         }
