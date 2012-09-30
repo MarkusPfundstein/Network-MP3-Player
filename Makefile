@@ -1,5 +1,5 @@
 GCC=gcc
-FLAGS=-O2 -Wall
+FLAGS=-O2 -Wall -g
 LIBS=-lao -lmpg123
 INCL=
 

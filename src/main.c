@@ -37,9 +37,8 @@ static fd_set g_read_master;
 static void
 close_cmd_sock()
 {
-    if (g_cmd_sock > 0) {
+    if (g_cmd_sock != -1) {
         fprintf(stderr, "close_cmd_sock()\n");
-        shutdown(g_cmd_sock, 0);
         close(g_cmd_sock);
         FD_CLR(g_cmd_sock, &g_read_master);
         g_cmd_sock = -1;
@@ -78,6 +77,7 @@ stream_loop(mpg123_handle *mh, int socket)
     status = MPG123_OK;
 
     /* set some standard format */
+    memset(&format, 0, sizeof(ao_sample_format));
     format.rate = 44100;
     format.channels = 2;
     format.byte_format = AO_FMT_LITTLE;
@@ -116,9 +116,10 @@ stream_loop(mpg123_handle *mh, int socket)
                 ao_play(dev, (char*)out_buffer, bytes_decoded);
             }
         }
-    } while (1);
+    } while (g_go_on);
 
     if (dev) {
+        fprintf(stderr, "stderr close ao device\n");
         ao_close(dev);
     }
     return status;
@@ -172,13 +173,17 @@ main(int argc, char **argv)
     char buffer[32];
     int bytes_read;
 
+    sockfd = -1;
+    newfd = -1;
+    stream_thread = -1;
     mpg123_init();
+    ao_initialize();
+
     mh = mpg123_new(NULL, NULL);
     if (!mh) {
         fprintf(stderr, "error mpg123_new()\n");
-        return 1;
+        goto cleanup;
     }
-
 
     mpg123_param(mh, MPG123_VERBOSE, 2, 0);
 
@@ -188,7 +193,7 @@ main(int argc, char **argv)
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
         perror("socket");
-        return 1;
+        goto cleanup;
     }
     memset(&serv_addr, 0, sizeof(serv_addr));
     portno = atoi(argv[1]);
@@ -197,12 +202,13 @@ main(int argc, char **argv)
     serv_addr.sin_port = htons(portno);
     if (bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         perror("bind");
-        return 1;
+        goto cleanup;
     }
 
-    ao_initialize();
-
-    listen(sockfd, 5);
+    if (listen(sockfd, 5) < 0) {
+        perror("listen");
+        goto cleanup;
+    }
     socklen = sizeof(cli_addr);
     g_go_on = 1;
     g_cmd_sock = -1;
@@ -227,13 +233,18 @@ main(int argc, char **argv)
                     } else {
                         bytes_read = read(newfd, buffer, sizeof(buffer));
                         if (bytes_read > 0) {
-                            if (strncmp(buffer, 
+                            if (bytes_read >= strlen(IDENT_STREAM_SOCK) &&
+                                strncmp(buffer, 
                                         IDENT_STREAM_SOCK,
                                         strlen(IDENT_STREAM_SOCK)) == 0) {
                                 fprintf(stderr, "stream sock %d connected\n", newfd);
                                 thread_args = malloc(sizeof(thread_args_t));
                                 thread_args->mh = mh;
                                 thread_args->stream_socket = newfd;
+                                if (stream_thread != -1) {
+                                    pthread_detach(stream_thread);
+                                    stream_thread = -1;
+                                }
                                 if (pthread_create(&stream_thread, 
                                                    NULL, 
                                                    stream_thread_main,
@@ -242,7 +253,8 @@ main(int argc, char **argv)
                                     perror("pthread create");
                                     break;
                                 }
-                            } else if (strncmp(buffer, 
+                            } else if (bytes_read >= strlen(IDENT_CMD_SOCK) &&
+                                       strncmp(buffer, 
                                                IDENT_CMD_SOCK,
                                                strlen(IDENT_CMD_SOCK)) == 0) {
                                 make_socket_nonblock(newfd);
@@ -271,20 +283,30 @@ main(int argc, char **argv)
     }
     fprintf(stderr, "shutdown... waiting for thread\n");
 
-    pthread_join(stream_thread, NULL);
+    if (stream_thread != -1 ) {
+        pthread_join(stream_thread, NULL);
+        pthread_detach(stream_thread);
+    }
     
     fprintf(stderr, "shutdown\n");
 
-    if (g_cmd_sock > 0) {
+cleanup:
+    if (g_cmd_sock != -1) {
         close_cmd_sock();
     }
-    close(sockfd);
-    ao_shutdown();
-
+    if (sockfd != -1) {
+        close(sockfd);
+    }
+    
     if (mh) {
+        fprintf(stderr, "close mpg123\n");
         mpg123_close(mh);
         mpg123_delete(mh);
     }
     mpg123_exit();
+
+    fprintf(stderr, "shutdown ao\n");
+    ao_shutdown();
+
     return 0;
 }
