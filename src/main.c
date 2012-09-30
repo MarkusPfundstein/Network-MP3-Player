@@ -33,10 +33,12 @@ typedef struct cmd_table_s {
     cmd_callback_t cb;
 } cmd_table_t;
 
+/* global state variables */
 static int g_go_on;
 static int g_cmd_sock;
 static int g_busy;
 static int g_stop;
+static int g_paused;
 
 static fd_set g_read_master;
 
@@ -49,6 +51,18 @@ close_cmd_sock()
         FD_CLR(g_cmd_sock, &g_read_master);
         g_cmd_sock = -1;
     }
+}
+
+static int
+handle_pause_command(char *buffer, int buf_len)
+{
+    (void)buffer;
+    (void)buf_len;
+
+    /* needs lock ???? */
+    g_paused = !g_paused;
+
+    return 0;
 }
 
 static int
@@ -72,7 +86,8 @@ handle_command(char *buffer, int buf_len)
     int i;
     int len;
     static const cmd_table_t cmds[] = {
-        { "STOP", &handle_stop_command }
+        { "STOP", &handle_stop_command },
+        { "PAUSE", &handle_pause_command }
     };
     for (i = 0; i < sizeof(cmds) / sizeof(cmd_table_t); ++i) {
         len = sizeof(cmds[i].cmd);
@@ -126,6 +141,11 @@ stream_loop(mpg123_handle *mh, int socket)
     }
 
     do {
+        if (g_paused) {
+            fprintf(stderr, "paused\n");
+            sleep(1);
+            continue;
+        }
         status = mpg123_read(mh, out_buffer, OUT_BUF_SIZE, &bytes_decoded);
         if (status != 0) {
             fprintf(stderr, "status [%d] - %s\n", status, mpg123_plain_strerror(status));
@@ -169,8 +189,10 @@ stream_thread_main(void *args)
     thread_args_t *thread_args;
     
     fprintf(stderr, "start streaming thread\n");
+    /* initialize global state variables used in this thread */
     g_busy = 1;
     g_stop = 0;
+    g_paused = 0;
 
     thread_args = (thread_args_t*)args;
     /* go into loop which reads from connection and parses it to dev */
@@ -311,6 +333,10 @@ main(int argc, char **argv)
                 if (bytes_read <= 0) {
                     fprintf(stderr, "read() - lost cmd_sock\n");
                     close_cmd_sock();
+                    /* reset paused state here.. otherwise we get in dead lock */
+                    /* and stop that bitch */
+                    g_paused = 0;
+                    g_stop = 1;
                     if (bytes_read != 0) {
                         perror("cmd_sock read");
                     }
