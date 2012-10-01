@@ -233,21 +233,28 @@ main(int argc, char **argv)
     char buffer[32];
     int bytes_read;
 
+    if (argc < 2) {
+      fprintf(stderr, "specify port to listen too\n");
+      return 1;
+    }
     sockfd = -1;
     newfd = -1;
     stream_thread = -1;
-    mpg123_init();
+
+    fprintf(stderr, "bring up ao\n");
     ao_initialize();
 
+    fprintf(stderr, "bring up mpg123\n");
+    mpg123_init();
     mh = mpg123_new(NULL, NULL);
     if (!mh) {
         fprintf(stderr, "error mpg123_new()\n");
         goto cleanup;
     }
 
+    fprintf(stderr, "mpg123 initialized\n");
     mpg123_param(mh, MPG123_VERBOSE, 2, 0);
 
-    signal(SIGCHLD, SIG_IGN);
     signal(SIGINT, handle_sigint);
 
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -281,48 +288,43 @@ main(int argc, char **argv)
         ready = select(10, &read_set, NULL, NULL, NULL);
         if (ready < 0) {
             perror("select!!!!");
-            g_go_on = 0;
+            //g_go_on = 0;
         } else if (ready > 0) {
             if (FD_ISSET(sockfd, &read_set)) {
                 newfd = accept(sockfd, (struct sockaddr *)&cli_addr, &socklen);
                 if (newfd < 0) {
                     perror("accept");
                 } else {
-                    if (g_busy) {
-                        fprintf(stderr, "accept: busy\n");
-                        close(newfd);
-                    } else {
-                        bytes_read = read(newfd, buffer, sizeof(buffer));
-                        if (bytes_read > 0) {
-                            if (bytes_read >= strlen(IDENT_STREAM_SOCK) &&
-                                strncmp(buffer, 
-                                        IDENT_STREAM_SOCK,
-                                        strlen(IDENT_STREAM_SOCK)) == 0) {
-                                fprintf(stderr, "stream sock %d connected\n", newfd);
-                                thread_args = malloc(sizeof(thread_args_t));
-                                thread_args->mh = mh;
-                                thread_args->stream_socket = newfd;
-                                if (stream_thread != -1) {
-                                    pthread_detach(stream_thread);
-                                    stream_thread = -1;
-                                }
-                                if (pthread_create(&stream_thread, 
-                                                   NULL, 
-                                                   stream_thread_main,
-                                                   thread_args) < 0) {
-                                    free(thread_args);
-                                    perror("pthread create");
-                                    break;
-                                }
-                            } else if (bytes_read >= strlen(IDENT_CMD_SOCK) &&
-                                       strncmp(buffer, 
-                                               IDENT_CMD_SOCK,
-                                               strlen(IDENT_CMD_SOCK)) == 0) {
-                                make_socket_nonblock(newfd);
-                                FD_SET(newfd, &g_read_master);
-                                g_cmd_sock = newfd;
-                                fprintf(stderr, "cmd sock %d connected\n", newfd);
-                            }
+                    bytes_read = read(newfd, buffer, sizeof(buffer));
+                    if (bytes_read > 0) {
+                        if (bytes_read >= strlen(IDENT_STREAM_SOCK) &&
+                            strncmp(buffer, 
+                                    IDENT_STREAM_SOCK,
+                                    strlen(IDENT_STREAM_SOCK)) == 0) {
+                              fprintf(stderr, "stream sock %d connected\n", newfd);
+                              thread_args = malloc(sizeof(thread_args_t));
+                              thread_args->mh = mh;
+                              thread_args->stream_socket = newfd;
+                              if (stream_thread != -1) {
+                                  pthread_detach(stream_thread);
+                                  stream_thread = -1;
+                              }
+                              if (pthread_create(&stream_thread, 
+                                                 NULL, 
+                                                 stream_thread_main,
+                                                 thread_args) < 0) {
+                                  free(thread_args);
+                                  perror("pthread create");
+                                  break;
+                              }
+                        } else if (bytes_read >= strlen(IDENT_CMD_SOCK) &&
+                                   strncmp(buffer, 
+                                           IDENT_CMD_SOCK,
+                                           strlen(IDENT_CMD_SOCK)) == 0) {
+                            make_socket_nonblock(newfd);
+                            FD_SET(newfd, &g_read_master);
+                            g_cmd_sock = newfd;
+                            fprintf(stderr, "cmd sock %d connected\n", newfd);
                         }
                     }
                 }

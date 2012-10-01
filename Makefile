@@ -3,10 +3,7 @@ FLAGS=-O2 -Wall -g
 LIBS=-lao -lmpg123
 INCL=
 
-OBJ=connection.o main.o
-
-connection.o : src/connection.c
-	${GCC} ${FLAGS} -c src/connection.c ${INCL}
+OBJ=main.o
 
 main.o : src/main.c
 	${GCC} ${FLAGS} -c src/main.c ${INCL}
