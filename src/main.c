@@ -90,7 +90,7 @@ handle_command(char *buffer, int buf_len)
         { "PAUSE", &handle_pause_command }
     };
     for (i = 0; i < sizeof(cmds) / sizeof(cmd_table_t); ++i) {
-        len = sizeof(cmds[i].cmd);
+        len = strlen(cmds[i].cmd);
         if (buf_len >= len && strncmp(buffer, cmds[i].cmd, len) == 0) {
             cmds[i].cb(buffer + len, buf_len - len);
         }
